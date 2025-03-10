@@ -3,43 +3,96 @@ syntax = "proto3";
 package blockchain;
 
 service BlockchainService {
-    // Submit a new transaction to the blockchain
-    rpc SubmitTransaction (Transaction) returns (TransactionResponse);
-    
-    // Get balance for a wallet address
-    rpc GetBalance (BalanceRequest) returns (BalanceResponse);
-    
-    // Request coins from the faucet
-    rpc RequestFaucet (FaucetRequest) returns (FaucetResponse);
+  // Submit a new transaction to the blockchain
+  rpc SubmitTransaction(Transaction) returns (TransactionResponse);
+
+  // Get balance for a wallet address
+  rpc GetBalance(BalanceRequest) returns (BalanceResponse);
+
+  // Request coins from the faucet
+  rpc RequestFaucet(FaucetRequest) returns (FaucetResponse);
+
+  // gets the history of transactions for a wallet address
+  rpc GetHistory(HistoryRequest) returns (HistoryResponse);
+  // gets the complete state of the blockchain
+  rpc GetState(GetStateRequest) returns (StateResponse);
+
+  // gets the transaction by hash
+  // rpc GetTransaction(GetTransactionRequest) returns (GetTransactionResponse);
+
+  // get the block by index
+  rpc GetBlock(GetBlockRequest) returns (GetBlockResponse);
+}
+
+// can't we just not have any req parameters and just return the state?
+message GetStateRequest {
+string address=1;
+}
+
+
+message GetBlockRequest {
+  uint64 index = 1; // index of the block
+}
+message GetBlockResponse {
+  Block block = 1;
+  }
+
+message GetTransactionRequest {
+  string blockhash = 1; // hash of the block
+}
+
+message GetTransactionResponse {
+  Transaction transaction = 1;
+}
+
+message StateResponse {
+    repeated Block blocks = 1;
+}
+
+message Block {
+    uint64 index = 1; // index of the block in the chain
+    int64 timestamp = 2; // timestamp of the block
+    repeated Transaction transactions = 3; // the array of transactions for the block
+    string previousHash = 4; // hash of the previous block
+    string hash = 5; // hash of the block
+    uint64 nonce = 6; // nonce used to mine the block
+    string miner = 7; // miner's public key as hex
+}
+
+
+message HistoryRequest {
+  string address = 1; // sender's public key as hex
+}
+
+message HistoryResponse {
+  repeated Transaction transactions = 1; // the array of transactions for the address
 }
 
 message Transaction {
-    string from = 1;     // sender's public key as hex
-    string to = 2;       // recipient's public key as hex
-    uint64 amount = 3;   // amount to transfer
-    uint64 timestamp = 4; // timestamp of the transaction
-    bytes signature = 5; // transaction signature
+  string from = 1;      // sender's public key as hex
+  string to = 2;        // recipient's public key as hex
+  uint64 amount = 3;    // amount to transfer
+  uint64 timestamp = 4; // timestamp of the transaction
+  bytes signature = 5;  // transaction signature
 }
 
 message TransactionResponse {
-    bool success = 1;
-    string message = 2;  // success/error message
+  bool success = 1;
+  string message = 2; // success/error message
 }
 
 message BalanceRequest {
-    string address = 1;  // public key as hex
+  string address = 1; // public key as hex
 }
 
-message BalanceResponse {
-    uint64 balance = 1;
-}
+message BalanceResponse { uint64 balance = 1; }
 
 message FaucetRequest {
-    string address = 1;  // address to receive funds
+  string address = 1; // address to receive funds
 }
 
 message FaucetResponse {
-    bool success = 1;
-    uint64 amount = 2;   // amount sent from faucet
-    string message = 3;  // success/error message
+  bool success = 1;
+  uint64 amount = 2;  // amount sent from faucet
+  string message = 3; // success/error message
 }

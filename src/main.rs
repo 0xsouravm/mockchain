@@ -1,13 +1,13 @@
 use chrono::{DateTime, Utc};
+use log::{info, warn};
 use secp256k1::{PublicKey, Secp256k1};
-use serde::{Serialize, Deserialize};
-use sha2::{Sha256, Digest};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 use tonic::{transport::Server, Request, Response, Status};
-use log::{info, warn};
 
 pub mod blockchain {
     tonic::include_proto!("blockchain");
@@ -17,17 +17,19 @@ const FAUCET_MOCKCHAIN_ADDRESS: &str = "FAUCET_MOCKCHAIN_ADDRESS";
 
 use blockchain::blockchain_service_server::{BlockchainService, BlockchainServiceServer};
 use blockchain::{
-    Transaction as ProtoTransaction,
-    TransactionResponse,
-    BalanceRequest,
-    BalanceResponse,
-    FaucetRequest,
-    FaucetResponse,
+    BalanceRequest, BalanceResponse, FaucetRequest, FaucetResponse, GetStateRequest,
+    GetTransactionRequest, GetTransactionResponse, HistoryRequest, HistoryResponse, StateResponse,
+    Transaction as ProtoTransaction, TransactionResponse,
 };
 
 // Consensus trait defines how blocks are produced and validated
 pub trait Consensus: Send + Sync {
-    fn generate_block(&self, index: u64, transactions: Vec<Transaction>, previous_hash: String) -> Block;
+    fn generate_block(
+        &self,
+        index: u64,
+        transactions: Vec<Transaction>,
+        previous_hash: String,
+    ) -> Block;
     fn validate_block(&self, block: &Block, previous_hash: &str) -> bool;
     fn start(&self, blockchain: Arc<Mutex<Blockchain>>);
     fn name(&self) -> &str;
@@ -43,8 +45,10 @@ pub enum ConsensusType {
 impl ConsensusType {
     fn create_consensus(&self) -> Box<dyn Consensus> {
         match self {
-            ConsensusType::ProofOfWorkType { difficulty } => Box::new(ProofOfWork::new(*difficulty)),
-            ConsensusType::ProofOfStakeType { min_stake: _ } => todo!()
+            ConsensusType::ProofOfWorkType { difficulty } => {
+                Box::new(ProofOfWork::new(*difficulty))
+            }
+            ConsensusType::ProofOfStakeType { min_stake: _ } => todo!(),
         }
     }
 }
@@ -65,15 +69,20 @@ impl Consensus for ProofOfWork {
         "Proof of Work"
     }
 
-    fn generate_block(&self, index: u64, transactions: Vec<Transaction>, previous_hash: String) -> Block {
+    fn generate_block(
+        &self,
+        index: u64,
+        transactions: Vec<Transaction>,
+        previous_hash: String,
+    ) -> Block {
         let mut block = Block::new(index, transactions, previous_hash);
-        
+
         let target = "0".repeat(self.difficulty);
         while !block.hash.starts_with(&target) {
             block.nonce += 1;
             block.hash = block.calculate_hash();
         }
-        
+
         block
     }
 
@@ -93,8 +102,11 @@ impl Consensus for ProofOfWork {
         tokio::spawn(async move {
             let secp = Secp256k1::new();
             let (_, miner_key) = secp.generate_keypair(&mut rand::thread_rng());
-            info!("PoW mining with address: {}", hex::encode(miner_key.serialize()));
-            
+            info!(
+                "PoW mining with address: {}",
+                hex::encode(miner_key.serialize())
+            );
+
             loop {
                 {
                     let mut chain = blockchain.lock().await;
@@ -126,9 +138,9 @@ impl Transaction {
             to: to.to_string(),
             amount,
             timestamp: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
-            .as_secs(),
+                .duration_since(UNIX_EPOCH)
+                .expect("Time went backwards")
+                .as_secs(),
             signature: Vec::new(),
         }
     }
@@ -136,12 +148,9 @@ impl Transaction {
     pub fn get_message_to_sign(&self) -> Vec<u8> {
         let mut hasher = Sha256::new();
         hasher.update(
-            serde_json::to_string(&(
-                &self.from,
-                &self.to,
-                self.amount,
-                self.timestamp,
-            )).unwrap().as_bytes()
+            serde_json::to_string(&(&self.from, &self.to, self.amount, self.timestamp))
+                .unwrap()
+                .as_bytes(),
         );
         hasher.finalize().to_vec()
     }
@@ -151,9 +160,9 @@ impl Transaction {
         if self.from == FAUCET_MOCKCHAIN_ADDRESS {
             return true;
         }
-        
+
         let secp = Secp256k1::new();
-        
+
         let public_key_bytes = match hex::decode(&self.from) {
             Ok(bytes) => bytes,
             Err(e) => {
@@ -161,7 +170,7 @@ impl Transaction {
                 return false;
             }
         };
-        
+
         let public_key = match PublicKey::from_slice(&public_key_bytes) {
             Ok(key) => key,
             Err(e) => {
@@ -192,11 +201,7 @@ pub struct Block {
 }
 
 impl Block {
-    pub fn new(
-        index: u64,
-        transactions: Vec<Transaction>,
-        previous_hash: String,
-    ) -> Self {
+    pub fn new(index: u64, transactions: Vec<Transaction>, previous_hash: String) -> Self {
         let mut block = Self {
             index,
             timestamp: Utc::now(),
@@ -218,8 +223,9 @@ impl Block {
             &self.transactions,
             &self.previous_hash,
             self.nonce,
-        )).unwrap();
-        
+        ))
+        .unwrap();
+
         hasher.update(content.as_bytes());
         hex::encode(hasher.finalize())
     }
@@ -234,8 +240,11 @@ pub struct Blockchain {
 impl Blockchain {
     pub fn new(consensus: Box<dyn Consensus>) -> Self {
         let genesis_block = consensus.generate_block(0, Vec::new(), String::from("0"));
-        info!("Creating new blockchain with {} consensus", consensus.name());
-        
+        info!(
+            "Creating new blockchain with {} consensus",
+            consensus.name()
+        );
+
         Self {
             chain: vec![genesis_block],
             transaction_pool: VecDeque::new(),
@@ -246,14 +255,14 @@ impl Blockchain {
     pub fn add_transaction(&mut self, transaction: Transaction) -> bool {
         // Allow transactions from the faucet without verification
         if transaction.from == FAUCET_MOCKCHAIN_ADDRESS {
-            info!("Adding faucet transaction to pool: FAUCET -> {}, amount: {}", 
-                transaction.to,
-                transaction.amount
+            info!(
+                "Adding faucet transaction to pool: FAUCET -> {}, amount: {}",
+                transaction.to, transaction.amount
             );
             self.transaction_pool.push_back(transaction);
             return true;
         }
-        
+
         if !transaction.verify() {
             warn!("Transaction verification failed");
             return false;
@@ -264,10 +273,9 @@ impl Blockchain {
             return false;
         }
 
-        info!("Adding transaction to pool: {} -> {}, amount: {}", 
-            transaction.from,
-            transaction.to,
-            transaction.amount
+        info!(
+            "Adding transaction to pool: {} -> {}, amount: {}",
+            transaction.from, transaction.to, transaction.amount
         );
         self.transaction_pool.push_back(transaction);
         true
@@ -280,7 +288,7 @@ impl Blockchain {
 
         let transactions: Vec<Transaction> = self.transaction_pool.drain(..).collect();
         let previous_block = self.chain.last()?;
-        
+
         let mut block = self.consensus.generate_block(
             previous_block.index + 1,
             transactions,
@@ -314,6 +322,29 @@ impl Blockchain {
         let balance = self.get_balance(address);
         balance >= amount
     }
+
+    pub fn get_state(&self) -> Vec<Block> {
+        self.chain.clone()
+    }
+
+    pub fn get_history(&self, address: &str) -> Vec<Transaction> {
+        let mut history: Vec<Transaction> = Vec::new();
+        for block in &self.chain {
+            for tx in &block.transactions {
+                if tx.from == address || tx.to == address {
+                    history.push(tx.clone());
+                }
+            }
+        }
+        history
+    }
+
+    pub fn get_block_from_index(&self, index: u64) -> Option<Block> {
+        self.chain
+            .iter()
+            .find(|block| block.index == index)
+            .cloned()
+    }
 }
 
 pub struct BlockchainServer {
@@ -335,7 +366,7 @@ impl BlockchainService for BlockchainServer {
         request: Request<ProtoTransaction>,
     ) -> Result<Response<TransactionResponse>, Status> {
         let tx = request.into_inner();
-        
+
         let transaction = Transaction {
             from: tx.from,
             to: tx.to,
@@ -349,7 +380,11 @@ impl BlockchainService for BlockchainServer {
 
         Ok(Response::new(TransactionResponse {
             success,
-            message: if success { "Transaction accepted".into() } else { "Transaction failed".into() },
+            message: if success {
+                "Transaction accepted".into()
+            } else {
+                "Transaction failed".into()
+            },
         }))
     }
 
@@ -360,42 +395,42 @@ impl BlockchainService for BlockchainServer {
         let address = request.into_inner().address;
         let chain = self.blockchain.lock().await;
         let balance = chain.get_balance(&address);
-        
+
         Ok(Response::new(BalanceResponse { balance }))
     }
-    
+
     async fn request_faucet(
         &self,
         request: Request<FaucetRequest>,
     ) -> Result<Response<FaucetResponse>, Status> {
         let address = request.into_inner().address;
         info!("Faucet request for address: {}", address);
-        
+
         // Create a faucet transaction
         let faucet_amount = 1000; // Amount for testing
-        
+
         // Create a system transaction to fund the account
         let transaction = Transaction {
             from: FAUCET_MOCKCHAIN_ADDRESS.to_string(), // Special faucet address
             to: address.clone(),
             amount: faucet_amount,
             timestamp: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
-            .as_secs(),
-            signature: vec![],  // No signature needed for faucet
+                .duration_since(UNIX_EPOCH)
+                .expect("Time went backwards")
+                .as_secs(),
+            signature: vec![], // No signature needed for faucet
         };
-        
+
         let mut chain = self.blockchain.lock().await;
         let success = chain.add_transaction(transaction);
-        
+
         // Immediately try to mine a block with this transaction
         let secp = Secp256k1::new();
         let (_, faucet_key) = secp.generate_keypair(&mut rand::thread_rng());
-        
+
         if let Some(block) = chain.mine_pending_transactions(&faucet_key) {
             info!("Created faucet block with hash {}", block.hash);
-            
+
             Ok(Response::new(FaucetResponse {
                 success: true,
                 amount: faucet_amount,
@@ -405,12 +440,95 @@ impl BlockchainService for BlockchainServer {
             Ok(Response::new(FaucetResponse {
                 success,
                 amount: if success { faucet_amount } else { 0 },
-                message: if success { 
+                message: if success {
                     "Faucet funds queued for next block".to_string()
-                } else { 
-                    "Failed to process faucet request".to_string() 
+                } else {
+                    "Failed to process faucet request".to_string()
                 },
             }))
+        }
+    }
+
+    async fn get_history(
+        &self,
+        request: Request<HistoryRequest>,
+    ) -> Result<Response<HistoryResponse>, Status> {
+        let address = request.into_inner().address;
+        let chain = self.blockchain.lock().await;
+        let history = chain.get_history(&address);
+        // TODO: do we need to return an error if the address has no history?
+        Ok(Response::new(HistoryResponse {
+            transactions: history.into_iter().map(Into::into).collect(),
+        }))
+    }
+
+    async fn get_state(
+        &self,
+        request: Request<GetStateRequest>,
+    ) -> Result<Response<StateResponse>, Status> {
+        let chain = self.blockchain.lock().await;
+        let state = chain.get_state();
+        Ok(Response::new(StateResponse {
+            blocks: state.into_iter().map(Into::into).collect(),
+        }))
+    }
+
+    // TODO: implement this
+
+    // async fn get_transaction(
+    //     &self,
+    //     request: Request<GetTransactionRequest>,
+    // ) -> Result<Response<GetTransactionResponse>, Status> {
+    //     let hash = request.into_inner().blockhash;
+    //     let chain = self.blockchain.lock().await;
+    //     if let Some(tx) = chain.get_transaction_from_hash(&hash) {
+    //         Ok(Response::new(GetTransactionResponse {
+    //             transaction: Some(tx.into()),
+    //         }))
+    //     } else {
+    //         Err(Status::not_found("Transaction not found"))
+    //     }
+    // }
+
+    async fn get_block(
+        &self,
+        request: Request<blockchain::GetBlockRequest>,
+    ) -> Result<Response<blockchain::GetBlockResponse>, Status> {
+        let index = request.into_inner().index;
+        let chain = self.blockchain.lock().await;
+        match chain.get_block_from_index(index) {
+            Some(block) => Ok(Response::new(blockchain::GetBlockResponse {
+                block: Some(block.into()),
+            })),
+            None => Err(Status::not_found("Block not found")),
+        }
+    }
+}
+
+// implements conversion of transactions to blockchain::Transaction
+impl From<Transaction> for ProtoTransaction {
+    fn from(tx: Transaction) -> Self {
+        Self {
+            from: tx.from,
+            to: tx.to,
+            amount: tx.amount,
+            timestamp: tx.timestamp,
+            signature: tx.signature,
+        }
+    }
+}
+
+// implements conversion of Block to blockchain::Block
+impl From<Block> for blockchain::Block {
+    fn from(block: Block) -> Self {
+        Self {
+            index: block.index,
+            timestamp: block.timestamp.timestamp(),
+            transactions: block.transactions.into_iter().map(Into::into).collect(),
+            previous_hash: block.previous_hash,
+            hash: block.hash,
+            nonce: block.nonce,
+            miner: block.miner,
         }
     }
 }
@@ -424,17 +542,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Choose consensus mechanism (could come from args/config)
     let consensus_type = ConsensusType::ProofOfWorkType { difficulty: 3 };
     let consensus = consensus_type.create_consensus();
-    
+
     info!("Blockchain node starting...");
     let blockchain = Blockchain::new(consensus);
     let server = BlockchainServer::new(blockchain);
-    
+
     // Start consensus mechanism
-    server.blockchain.lock().await.consensus.start(Arc::clone(&server.blockchain));
-    
+    server
+        .blockchain
+        .lock()
+        .await
+        .consensus
+        .start(Arc::clone(&server.blockchain));
+
     let addr = "[::1]:50051".parse()?;
     info!("Starting gRPC server on {}", addr);
-    
+
     Server::builder()
         .add_service(BlockchainServiceServer::new(server))
         .serve(addr)
